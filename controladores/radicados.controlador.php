@@ -65,7 +65,14 @@ class ControladorRadicados
                 $idUsuario = (int)$post["responsable"];
             }
 
-            $fechaLimite = !empty($post["fechaLimite"]) ? trim($post["fechaLimite"]) : (!empty($post["fecha_limite"]) ? trim($post["fecha_limite"]) : null);
+            // Cálculo automático e inmutable de la Fecha Límite según Acuerdo 060/2001 AGN y Ley 1755/2015
+            $fechaLimite = null;
+            if (!empty($idTramite)) {
+                $fechaLimite = self::calcularFechaLimitePorTramite($idTramite);
+            }
+            if ($fechaLimite === null) {
+                $fechaLimite = !empty($post["fechaLimite"]) ? trim($post["fechaLimite"]) : (!empty($post["fecha_limite"]) ? trim($post["fecha_limite"]) : null);
+            }
 
             // 2. Manejo de Ley de Transparencia (Radicación Anónima RF-09)
             $esAnonimo = !empty($post["radicacionAnonima"]) || (isset($post["es_anonimo"]) && ($post["es_anonimo"] === true || $post["es_anonimo"] === "1" || $post["es_anonimo"] === "true"));
@@ -360,5 +367,156 @@ class ControladorRadicados
         foreach ($rutasRelativas as $ruta) {
             ArchivoServicio::revertirArchivo($ruta);
         }
+    }
+
+    /**
+     * Calcula la fecha límite legal de respuesta en días hábiles según el trámite seleccionado,
+     * cumpliendo con el Acuerdo 060/2001 del AGN y la Ley 1755 de 2015 (CPACA).
+     */
+    private static function calcularFechaLimitePorTramite(int $idTramite): ?string
+    {
+        try {
+            $db = Conexion::conectar();
+            $stmt = $db->prepare("SELECT nombre, dias_respuesta FROM tramites WHERE id_tramite = :id LIMIT 1");
+            $stmt->bindParam(":id", $idTramite, PDO::PARAM_INT);
+            $stmt->execute();
+            $tramite = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$tramite) {
+                return self::calcularFechaDiasHabilesColombia(15);
+            }
+
+            $nombre = mb_strtolower((string)($tramite["nombre"] ?? ""), "UTF-8");
+            $diasBD = isset($tramite["dias_respuesta"]) ? (int)$tramite["dias_respuesta"] : 15;
+
+            if (str_contains($nombre, "mero trámite") || str_contains($nombre, "mero tramite") || str_contains($nombre, "informativa")) {
+                return null;
+            }
+            if (str_contains($nombre, "incompleta") || str_contains($nombre, "subsanación") || str_contains($nombre, "subsanacion") || str_contains($nombre, "desistimiento")) {
+                $f = new DateTime();
+                $f->modify("+1 month");
+                return $f->format("Y-m-d");
+            }
+            if (str_contains($nombre, "tutela")) {
+                return self::calcularFechaDiasHabilesColombia(2);
+            }
+            if (str_contains($nombre, "riesgo inminente") || str_contains($nombre, "prioritaria")) {
+                return self::calcularFechaDiasHabilesColombia(0);
+            }
+
+            $dias = $diasBD > 0 ? $diasBD : 15;
+            return self::calcularFechaDiasHabilesColombia($dias);
+        } catch (Exception $e) {
+            error_log("Error en ControladorRadicados::calcularFechaLimitePorTramite: " . $e->getMessage());
+            return self::calcularFechaDiasHabilesColombia(15);
+        }
+    }
+
+    /**
+     * Suma días hábiles en Colombia a partir del primer día hábil siguiente a la radicación
+     * (excluyendo sábados, domingos y festivos oficiales de la Ley 51 de 1983).
+     */
+    private static function calcularFechaDiasHabilesColombia(int $diasHabiles): string
+    {
+        $cursor = new DateTime();
+        $cacheFestivos = [];
+
+        $esDiaHabil = function (DateTime $fecha) use (&$cacheFestivos): bool {
+            $dow = (int)$fecha->format("N"); // 1 (Lun) a 7 (Dom)
+            if ($dow >= 6) {
+                return false;
+            }
+            $anio = (int)$fecha->format("Y");
+            if (!isset($cacheFestivos[$anio])) {
+                $cacheFestivos[$anio] = self::obtenerFestivosColombia($anio);
+            }
+            return !in_array($fecha->format("Y-m-d"), $cacheFestivos[$anio], true);
+        };
+
+        if ($diasHabiles <= 0) {
+            while (!$esDiaHabil($cursor)) {
+                $cursor->modify("+1 day");
+            }
+            return $cursor->format("Y-m-d");
+        }
+
+        $restantes = $diasHabiles;
+        while ($restantes > 0) {
+            $cursor->modify("+1 day");
+            if ($esDiaHabil($cursor)) {
+                $restantes--;
+            }
+        }
+
+        return $cursor->format("Y-m-d");
+    }
+
+    /**
+     * Retorna el listado de fechas festivas en Colombia (YYYY-MM-DD) para un año dado.
+     */
+    private static function obtenerFestivosColombia(int $anio): array
+    {
+        $festivos = [
+            "{$anio}-01-01",
+            "{$anio}-05-01",
+            "{$anio}-07-20",
+            "{$anio}-08-07",
+            "{$anio}-12-08",
+            "{$anio}-12-25"
+        ];
+
+        $trasladarLunes = function (int $mes, int $dia) use ($anio): string {
+            $f = new DateTime(sprintf("%04d-%02d-%02d", $anio, $mes, $dia));
+            $dow = (int)$f->format("N");
+            if ($dow !== 1) {
+                $delta = 8 - $dow;
+                $f->modify("+{$delta} days");
+            }
+            return $f->format("Y-m-d");
+        };
+
+        foreach ([[1, 6], [3, 19], [6, 29], [8, 15], [10, 12], [11, 1], [11, 11]] as [$m, $d]) {
+            $festivos[] = $trasladarLunes($m, $d);
+        }
+
+        // Cálculo de Pascua (Algoritmo de Butcher/Meeus)
+        $a = $anio % 19;
+        $b = intdiv($anio, 100);
+        $c = $anio % 100;
+        $d = intdiv($b, 4);
+        $e = $b % 4;
+        $f = intdiv($b + 8, 25);
+        $g = intdiv($b - $f + 1, 3);
+        $h = (19 * $a + $b - $d - $g + 15) % 30;
+        $i = intdiv($c, 4);
+        $k = $c % 4;
+        $l = (32 + 2 * $e + 2 * $i - $h - $k) % 7;
+        $m = intdiv($a + 11 * $h + 22 * $l, 451);
+        $mesPascua = intdiv($h + $l - 7 * $m + 114, 31);
+        $diaPascua = (($h + $l - 7 * $m + 114) % 31) + 1;
+
+        $pascua = new DateTime(sprintf("%04d-%02d-%02d", $anio, $mesPascua, $diaPascua));
+
+        $sumarPascua = function (int $dias, bool $moverALunes) use ($pascua): string {
+            $f = clone $pascua;
+            $mod = $dias >= 0 ? "+{$dias} days" : "{$dias} days";
+            $f->modify($mod);
+            if ($moverALunes) {
+                $dow = (int)$f->format("N");
+                if ($dow !== 1) {
+                    $delta = 8 - $dow;
+                    $f->modify("+{$delta} days");
+                }
+            }
+            return $f->format("Y-m-d");
+        };
+
+        $festivos[] = $sumarPascua(-3, false); // Jueves Santo
+        $festivos[] = $sumarPascua(-2, false); // Viernes Santo
+        $festivos[] = $sumarPascua(39, true);  // Ascensión del Señor
+        $festivos[] = $sumarPascua(60, true);  // Corpus Christi
+        $festivos[] = $sumarPascua(68, true);  // Sagrado Corazón de Jesús
+
+        return array_values(array_unique($festivos));
     }
 }

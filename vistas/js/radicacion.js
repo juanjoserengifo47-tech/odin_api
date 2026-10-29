@@ -62,12 +62,20 @@ function poblarSelectTramites(tramites) {
     $select.empty().append('<option value="">Seleccione un trámite...</option>');
     tramites.forEach(t => {
         $select.append(`<option value="${t.id_tramite}" 
-                                data-dias="${t.dias_respuesta || 15}" 
+                                data-dias="${t.dias_respuesta !== undefined && t.dias_respuesta !== null ? t.dias_respuesta : 15}" 
                                 data-prio="${t.prioridad_default || 'MEDIA'}"
-                                data-dep="${t.id_dependencia_responsable || ''}">${t.nombre}</option>`);
+                                data-dep="${t.id_dependencia_responsable || ''}"
+                                data-nombre="${t.nombre || ''}">${t.nombre}</option>`);
     });
 
     $select.on("change", function() {
+        const val = $(this).val();
+        if (!val) {
+            limpiarFechaLimiteAutomatica();
+            actualizarResumen();
+            return;
+        }
+
         const selectedOpt = $(this).find("option:selected");
         const prioridadDef = selectedOpt.data("prio");
         if (prioridadDef) {
@@ -80,7 +88,307 @@ function poblarSelectTramites(tramites) {
             $("#dependenciaResponsable").val(depId);
             asignarEncargadoPorDependencia(depId);
         }
+
+        // Cálculo automático e inmutable de la Fecha Límite según Acuerdo 060/2001 AGN y Ley 1755/2015
+        const diasBase = parseInt(selectedOpt.data("dias"), 10);
+        const nombreTramite = selectedOpt.data("nombre") || selectedOpt.text();
+        asignarFechaLimitePorTramite(nombreTramite, isNaN(diasBase) ? 15 : diasBase);
     });
+}
+
+/**
+ * Determina el término legal y fundamento normativo según la Guía de Términos Legales
+ * de Trámite y Respuesta Documental (Acuerdo 060/2001 AGN • Ley 1755/2015 CPACA).
+ */
+function obtenerNormativaTramite(nombreTramite, diasBaseBD) {
+    const texto = (nombreTramite || "").toLowerCase();
+
+    if (texto.includes("tutela")) {
+        return {
+            diasHabiles: 2,
+            etiquetaTermino: "24 a 48 horas (2 días hábiles)",
+            norma: "Decreto 2591 de 1991 (Término perentorio e improrrogable)"
+        };
+    }
+    if (texto.includes("riesgo inminente") || texto.includes("prioritaria")) {
+        return {
+            diasHabiles: 0,
+            etiquetaTermino: "Trámite inmediato",
+            norma: "Art. 20, Ley 1755 de 2015"
+        };
+    }
+    if (texto.includes("mero trámite") || texto.includes("mero tramite") || texto.includes("informativa")) {
+        return {
+            diasHabiles: null,
+            etiquetaTermino: "Sin término (archivo)",
+            norma: "Acuerdo 060 de 2001 AGN (Gestión de archivo)"
+        };
+    }
+    if (texto.includes("incompleta") || texto.includes("subsanación") || texto.includes("subsanacion") || texto.includes("desistimiento")) {
+        return {
+            diasHabiles: 30,
+            esMesCalendario: true,
+            etiquetaTermino: "1 mes calendario",
+            norma: "Art. 17, Ley 1755 de 2015 (Prorrogable por 1 mes)"
+        };
+    }
+    if (texto.includes("consulta") && (texto.includes("técnica") || texto.includes("tecnica") || texto.includes("jurídica") || texto.includes("juridica") || texto.includes("doctrinal"))) {
+        return {
+            diasHabiles: 30,
+            etiquetaTermino: "30 días hábiles",
+            norma: "Art. 14 num. 3, Ley 1755 de 2015"
+        };
+    }
+    if (texto.includes("congresista") || texto.includes("comisiones") || texto.includes("control político") || texto.includes("control politico")) {
+        return {
+            diasHabiles: 5,
+            etiquetaTermino: "5 días hábiles",
+            norma: "Art. 258, Ley 5 de 1992 (Reglamento Congreso)"
+        };
+    }
+    if (texto.includes("incompetencia") || texto.includes("interna") || texto.includes("traslado")) {
+        const dias = diasBaseBD > 0 ? diasBaseBD : 5;
+        return {
+            diasHabiles: dias,
+            etiquetaTermino: `${dias} días hábiles`,
+            norma: "Art. 21, Ley 1755 de 2015; Acuerdo AGN 060 de 2001"
+        };
+    }
+    if (texto.includes("judicial") || texto.includes("juzgado")) {
+        const dias = diasBaseBD > 0 ? diasBaseBD : 10;
+        return {
+            diasHabiles: dias,
+            etiquetaTermino: `${dias} días hábiles (5 a 10 días hábiles)`,
+            norma: "Ley 1564 de 2012 (Código General del Proceso)"
+        };
+    }
+    if (texto.includes("órgano") || texto.includes("organo") || texto.includes("pgn") || texto.includes("cgr") || texto.includes("defensoría") || texto.includes("defensoria")) {
+        const dias = diasBaseBD > 0 ? diasBaseBD : 10;
+        return {
+            diasHabiles: dias,
+            etiquetaTermino: `${dias} días hábiles (5 a 10 días hábiles)`,
+            norma: "Ley 1952 de 2019, Ley 610 de 2000, Ley 24 de 1992"
+        };
+    }
+    if (texto.includes("recurso") || texto.includes("reposición") || texto.includes("reposicion") || texto.includes("apelación") || texto.includes("apelacion")) {
+        return {
+            diasHabiles: 15,
+            etiquetaTermino: "15 días hábiles",
+            norma: "Art. 86 CPACA (salvo norma especial de 2 meses)"
+        };
+    }
+    if (texto.includes("oscura") || texto.includes("confusa") || texto.includes("aclaración") || texto.includes("aclaracion")) {
+        return {
+            diasHabiles: 10,
+            etiquetaTermino: "10 días hábiles",
+            norma: "Art. 19, Ley 1755 de 2015"
+        };
+    }
+    if (texto.includes("autoridades") || texto.includes("entidades")) {
+        return {
+            diasHabiles: 10,
+            etiquetaTermino: "10 días hábiles",
+            norma: "Art. 30, Ley 1755 de 2015"
+        };
+    }
+    if (texto.includes("información") || texto.includes("informacion") || texto.includes("copia") || texto.includes("certificaci")) {
+        const dias = diasBaseBD > 0 ? diasBaseBD : 10;
+        return {
+            diasHabiles: dias,
+            etiquetaTermino: `${dias} días hábiles`,
+            norma: "Art. 14, Ley 1755 de 2015; Acuerdo AGN 060 de 2001"
+        };
+    }
+    if (texto.includes("queja") || texto.includes("reclamo") || texto.includes("pqr")) {
+        const dias = diasBaseBD > 0 ? diasBaseBD : 15;
+        return {
+            diasHabiles: dias,
+            etiquetaTermino: `${dias} días hábiles`,
+            norma: "Ley 1755 de 2015; Circular Externa 001 del DAFP"
+        };
+    }
+    if (texto.includes("petición") || texto.includes("peticion")) {
+        const dias = diasBaseBD > 0 ? diasBaseBD : 15;
+        return {
+            diasHabiles: dias,
+            etiquetaTermino: `${dias} días hábiles`,
+            norma: "Art. 14, Ley 1755 de 2015; Art. 13 Ley 1437 de 2011"
+        };
+    }
+
+    const dias = diasBaseBD > 0 ? diasBaseBD : 15;
+    return {
+        diasHabiles: dias,
+        etiquetaTermino: `${dias} días hábiles`,
+        norma: "Acuerdo 060 de 2001 AGN; Ley 1755 de 2015 (CPACA)"
+    };
+}
+
+/**
+ * Calcula los festivos oficiales de Colombia para un año dado (Ley 51 de 1983 - Ley Emiliani)
+ */
+function obtenerFestivosColombia(anio) {
+    const festivos = new Set();
+    const fmt = (fecha) => {
+        const y = fecha.getFullYear();
+        const m = String(fecha.getMonth() + 1).padStart(2, "0");
+        const d = String(fecha.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+    };
+    const trasladarLunes = (mes, dia) => {
+        const f = new Date(anio, mes - 1, dia);
+        const dow = f.getDay(); // 0 = Dom, 1 = Lun ... 6 = Sab
+        if (dow !== 1) {
+            const delta = dow === 0 ? 1 : (8 - dow);
+            f.setDate(f.getDate() + delta);
+        }
+        return fmt(f);
+    };
+
+    // 1. Festivos de fecha fija inamovible
+    ["01-01", "05-01", "07-20", "08-07", "12-08", "12-25"].forEach(md => {
+        festivos.add(`${anio}-${md}`);
+    });
+
+    // 2. Festivos trasladables al lunes siguiente (Ley Emiliani)
+    [
+        [1, 6],   // Reyes Magos
+        [3, 19],  // San José
+        [6, 29],  // San Pedro y San Pablo
+        [8, 15],  // Asunción de la Virgen
+        [10, 12], // Día de la Raza
+        [11, 1],  // Todos los Santos
+        [11, 11]  // Independencia de Cartagena
+    ].forEach(([m, d]) => festivos.add(trasladarLunes(m, d)));
+
+    // 3. Festivos móviles respecto al Domingo de Pascua (Algoritmo de Butcher/Meeus)
+    const a = anio % 19;
+    const b = Math.floor(anio / 100);
+    const c = anio % 100;
+    const d = Math.floor(b / 4);
+    const e = b % 4;
+    const f = Math.floor((b + 8) / 25);
+    const g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4);
+    const k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const mesPascua = Math.floor((h + l - 7 * m + 114) / 31);
+    const diaPascua = ((h + l - 7 * m + 114) % 31) + 1;
+
+    const sumarDiasPascua = (dias, moverALunes) => {
+        const fecha = new Date(anio, mesPascua - 1, diaPascua);
+        fecha.setDate(fecha.getDate() + dias);
+        if (moverALunes) {
+            const dow = fecha.getDay();
+            if (dow !== 1) {
+                const delta = dow === 0 ? 1 : (8 - dow);
+                fecha.setDate(fecha.getDate() + delta);
+            }
+        }
+        return fmt(fecha);
+    };
+
+    festivos.add(sumarDiasPascua(-3, false)); // Jueves Santo
+    festivos.add(sumarDiasPascua(-2, false)); // Viernes Santo
+    festivos.add(sumarDiasPascua(39, true));  // Ascensión del Señor
+    festivos.add(sumarDiasPascua(60, true));  // Corpus Christi
+    festivos.add(sumarDiasPascua(68, true));  // Sagrado Corazón de Jesús
+
+    return festivos;
+}
+
+/**
+ * Calcula la fecha límite sumando días hábiles a partir del día hábil siguiente a la radicación
+ * (Directriz Técnica 2 del Acuerdo 060/2001 AGN y Ley 1755 de 2015: no incluye sábados, domingos ni festivos).
+ */
+function calcularFechaLimiteDiasHabiles(diasHabiles, fechaBase = new Date()) {
+    const cursor = new Date(fechaBase.getFullYear(), fechaBase.getMonth(), fechaBase.getDate());
+    const cacheFestivos = {};
+
+    const esDiaHabil = (fecha) => {
+        const dow = fecha.getDay();
+        if (dow === 0 || dow === 6) return false; // Domingo o Sábado
+        const y = fecha.getFullYear();
+        if (!cacheFestivos[y]) {
+            cacheFestivos[y] = obtenerFestivosColombia(y);
+        }
+        const m = String(fecha.getMonth() + 1).padStart(2, "0");
+        const d = String(fecha.getDate()).padStart(2, "0");
+        return !cacheFestivos[y].has(`${y}-${m}-${d}`);
+    };
+
+    // Trámite inmediato (0 días): vence el mismo día hábil o el primer día hábil disponible
+    if (diasHabiles === 0) {
+        while (!esDiaHabil(cursor)) {
+            cursor.setDate(cursor.getDate() + 1);
+        }
+    } else {
+        let restantes = diasHabiles;
+        while (restantes > 0) {
+            cursor.setDate(cursor.getDate() + 1);
+            if (esDiaHabil(cursor)) {
+                restantes--;
+            }
+        }
+    }
+
+    const yyyy = cursor.getFullYear();
+    const mm = String(cursor.getMonth() + 1).padStart(2, "0");
+    const dd = String(cursor.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+}
+
+function asignarFechaLimitePorTramite(nombreTramite, diasBaseBD) {
+    const info = obtenerNormativaTramite(nombreTramite, diasBaseBD);
+    const $inputHidden = $("#fechaLimite");
+    const $inputVisible = $("#fechaLimiteVisible");
+    const $infoNorma = $("#terminoLegalInfo");
+
+    if (info.diasHabiles === null) {
+        $inputHidden.val("");
+        $inputVisible.val("Sin término legal (Archivo / Mero trámite)");
+        $infoNorma.html(`<i class="fas fa-balance-scale mr-1 text-info"></i><strong>${info.etiquetaTermino}:</strong> ${info.norma}`);
+        actualizarResumen();
+        return;
+    }
+
+    let fechaCalculada = "";
+    if (info.esMesCalendario) {
+        const f = new Date();
+        f.setMonth(f.getMonth() + 1);
+        const yyyy = f.getFullYear();
+        const mm = String(f.getMonth() + 1).padStart(2, "0");
+        const dd = String(f.getDate()).padStart(2, "0");
+        fechaCalculada = `${yyyy}-${mm}-${dd}`;
+    } else {
+        fechaCalculada = calcularFechaLimiteDiasHabiles(info.diasHabiles, new Date());
+    }
+
+    const [anio, mes, dia] = fechaCalculada.split("-");
+    const fechaFormateada = `${dia}/${mes}/${anio} (${info.etiquetaTermino})`;
+
+    $inputHidden.val(fechaCalculada);
+    $inputVisible.val(fechaFormateada);
+    $infoNorma.html(
+        `<i class="fas fa-balance-scale mr-1 text-success"></i><strong>${info.etiquetaTermino}:</strong> ${info.norma} <span class="text-muted">(Cómputo desde el día hábil siguiente - No editable)</span>`
+    );
+
+    $inputVisible.addClass("border-success text-dark font-weight-bold");
+    setTimeout(() => {
+        $inputVisible.removeClass("border-success text-dark font-weight-bold");
+    }, 2000);
+
+    actualizarResumen();
+}
+
+function limpiarFechaLimiteAutomatica() {
+    $("#fechaLimite").val("");
+    $("#fechaLimiteVisible").val("");
+    $("#terminoLegalInfo").html(
+        '<i class="fas fa-lock mr-1 text-secondary"></i>Calculada automáticamente en días hábiles según Acuerdo 060/2001 AGN y Ley 1755/2015 (no editable)'
+    );
 }
 
 let catalogoDependencias = [];
@@ -481,8 +789,8 @@ function actualizarResumen() {
     const prio = $("#prioridad option:selected").text();
     $(".resumen-prioridad").text(prio && !prio.includes("Seleccione") ? prio : "—");
 
-    const fechaLim = $("#fechaLimite").val();
-    $(".resumen-fechaLimite").text(fechaLim || "—");
+    const fechaLimVis = $("#fechaLimiteVisible").val() || $("#fechaLimite").val();
+    $(".resumen-fechaLimite").text(fechaLimVis || "—");
 }
 
 /**
@@ -500,6 +808,7 @@ function limpiarFormulario() {
     $("#dependenciaResponsable").val("");
     $("#responsable").val("");
     $("#responsableVisible").val("");
+    limpiarFechaLimiteAutomatica();
     uploadedFiles = [];
     renderizarListaArchivos();
     $("#radicacionAnonima").prop("checked", false).trigger("change");

@@ -383,11 +383,16 @@ class ModeloRadicados
         $stmtTramites = $db->prepare(
             "SELECT t.id_tramite, t.nombre, t.descripcion, t.dias_respuesta, t.prioridad_default,
                     t.id_dependencia_responsable,
-                    COALESCE(t.id_usuario_responsable, d.id_usuario_responsable) AS id_usuario_responsable,
+                    u.id_usuario AS id_usuario_responsable,
                     u.nombre AS nombre_responsable
              FROM tramites t
-             LEFT JOIN dependencias d ON d.id_dependencia = t.id_dependencia_responsable
-             LEFT JOIN usuarios u ON u.id_usuario = COALESCE(t.id_usuario_responsable, d.id_usuario_responsable)
+             LEFT JOIN usuarios u ON u.id_usuario = (
+                 SELECT u2.id_usuario
+                 FROM usuarios u2
+                 WHERE u2.id_dependencia = t.id_dependencia_responsable AND u2.estado = 'Activo'
+                 ORDER BY u2.id_rol ASC, u2.id_usuario ASC
+                 LIMIT 1
+             )
              WHERE t.activo = 1 ORDER BY t.nombre ASC"
         );
         $stmtTramites->execute();
@@ -395,14 +400,20 @@ class ModeloRadicados
 
         $stmtDeps = $db->prepare(
             "SELECT d.id_dependencia, d.nombre, d.codigo, d.tipo,
-                    d.id_usuario_responsable AS id_responsable,
+                    u.id_usuario AS id_responsable,
                     u.nombre AS nombre_responsable,
                     u.correo AS correo_responsable,
                     COALESCE(r.nombre, 'Encargado del área') AS rol_responsable
              FROM dependencias d
-             LEFT JOIN usuarios u ON u.id_usuario = d.id_usuario_responsable
+             LEFT JOIN usuarios u ON u.id_usuario = (
+                 SELECT u2.id_usuario
+                 FROM usuarios u2
+                 WHERE u2.id_dependencia = d.id_dependencia AND u2.estado = 'Activo'
+                 ORDER BY u2.id_rol ASC, u2.id_usuario ASC
+                 LIMIT 1
+             )
              LEFT JOIN roles r ON r.id_rol = u.id_rol
-             WHERE d.estado = 'Activo'
+             WHERE d.estado IN ('Activo', 'Activa')
              ORDER BY d.nombre ASC"
         );
         $stmtDeps->execute();
@@ -451,35 +462,17 @@ class ModeloRadicados
             $stmt = $db->prepare(
                 "SELECT u.id_usuario, u.nombre, u.correo, u.id_dependencia,
                         COALESCE(r.nombre, 'Encargado del área') AS rol
-                 FROM dependencias d
-                 JOIN usuarios u ON u.id_usuario = d.id_usuario_responsable
-                 LEFT JOIN roles r ON r.id_rol = u.id_rol
-                 WHERE d.id_dependencia = :id_dep AND u.estado = 'Activo'
-                 LIMIT 1"
-            );
-            $stmt->bindParam(":id_dep", $idDependencia, PDO::PARAM_INT);
-            $stmt->execute();
-            $encargado = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if ($encargado) {
-                return $encargado;
-            }
-
-            // Fallback: si no tiene id_usuario_responsable asignado, buscar usuario activo en la dependencia
-            $stmtFallback = $db->prepare(
-                "SELECT u.id_usuario, u.nombre, u.correo, u.id_dependencia,
-                        COALESCE(r.nombre, 'Encargado del área') AS rol
                  FROM usuarios u
                  LEFT JOIN roles r ON r.id_rol = u.id_rol
                  WHERE u.id_dependencia = :id_dep AND u.estado = 'Activo'
                  ORDER BY u.id_rol ASC, u.id_usuario ASC
                  LIMIT 1"
             );
-            $stmtFallback->bindParam(":id_dep", $idDependencia, PDO::PARAM_INT);
-            $stmtFallback->execute();
-            $fallback = $stmtFallback->fetch(PDO::FETCH_ASSOC);
+            $stmt->bindParam(":id_dep", $idDependencia, PDO::PARAM_INT);
+            $stmt->execute();
+            $encargado = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            return $fallback ?: null;
+            return $encargado ?: null;
         } catch (Exception $e) {
             error_log("Error en ModeloRadicados::mdlObtenerEncargadoDependencia: " . $e->getMessage());
             return null;

@@ -179,9 +179,10 @@
                   <div class="invalid-feedback">Este campo es requerido</div>
                 </div>
                 <div class="col-md-6 form-group">
-                  <label for="fechaLimite"><i class="fas fa-hourglass-end mr-1"></i>Fecha límite <span class="text-danger">*</span></label>
-                  <input type="date" class="form-control" id="fechaLimite" name="fechaLimite" required>
-                  <div class="invalid-feedback">Este campo es requerido</div>
+                  <label for="fechaLimiteVisible"><i class="fas fa-hourglass-end mr-1"></i>Fecha límite de respuesta</label>
+                  <input type="text" class="form-control bg-light" id="fechaLimiteVisible" placeholder="Se calculará automáticamente al seleccionar el trámite" readonly>
+                  <input type="hidden" id="fechaLimite" name="fechaLimite" value="">
+                  <small id="terminoLegalInfo" class="form-text text-muted"><i class="fas fa-lock mr-1 text-secondary"></i>Calculada automáticamente en días hábiles según Acuerdo 060/2001 AGN y Ley 1755/2015 (no editable)</small>
                 </div>
               </div>
             </div>
